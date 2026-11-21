@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ d.title }} · 故障切换值班台</title>
+  <style>
+    :root { --ok:#1a7f37; --bad:#c62828; --warn:#b26a00; --line:#d0d7de; --bg:#f6f8fa; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+           margin: 0; background: var(--bg); color: #1f2328; }
+    header { background: #0d3b66; color: #fff; padding: 16px 28px; }
+    header a { color: #cfe3ff; }
+    main { max-width: 1120px; margin: 24px auto; padding: 0 20px; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 8px;
+            padding: 18px 20px; margin-bottom: 20px; }
+    h2 { margin-top: 0; font-size: 17px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+    th, td { border: 1px solid var(--line); padding: 7px 9px; text-align: left; vertical-align: top; }
+    th { background: #eef2f6; }
+    label { font-size: 13px; color: #555; display: block; margin: 8px 0 3px; }
+    input, select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+                    font-size: 13.5px; min-width: 150px; }
+    button { margin-top: 12px; padding: 8px 18px; border: 0; border-radius: 6px;
+             background: #0d6efd; color: #fff; font-size: 14px; cursor: pointer; }
+    button.secondary { background: #57606a; }
+    button.danger { background: #c62828; }
+    .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge.ok { background: #dafbe1; color: var(--ok); }
+    .badge.bad { background: #ffebe9; color: var(--bad); }
+    .badge.warn { background: #fff8c5; color: var(--warn); }
+    .muted { color: #656d76; font-size: 13px; }
+    .error { background: #ffebe9; border: 1px solid #ffabaf; color: #8a1c1c;
+             padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 18px; }
+    code { background: #eef2f6; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; word-break: break-all; }
+    .reason { color: var(--bad); font-size: 12.5px; margin: 3px 0; }
+    .meta { display:flex; gap:18px; flex-wrap:wrap; font-size:14px; }
+    .meta div { background:#eef2f6; border-radius:8px; padding:8px 14px; }
+  </style>
+</head>
+<body>
+<header>
+  <a href="/">← 事件列表</a>
+  <h1 style="margin:6px 0 0;font-size:20px;">#{{ d.id }} {{ d.title }}</h1>
+</header>
+<main>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <div class="card">
+    <h2>当前态势</h2>
+    <div class="meta">
+      <div>页面版本 <strong>v{{ d.version }}</strong><div class="muted">提交需带此版本，过期页面将被拒绝</div></div>
+      <div>生效主库 <strong>{% if d.active_primary %}{{ d.active_primary.name }}（{{ d.active_primary.node_key }}）{% else %}—{% endif %}</strong></div>
+      <div>当前代次 <strong>第 {{ d.current_generation }} 代</strong></div>
+      <div>主库 timeline <strong>{{ d.current_primary_timeline }}</strong></div>
+      <div>提交水位 <strong><code>{{ d.current_commit_lsn_text }}</code></strong></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>节点与最新观测</h2>
+    <table>
+      <thead><tr><th>节点</th><th>角色</th><th>代次</th><th>生效主库</th><th>观测 timeline</th><th>replay LSN</th><th>来源</th></tr></thead>
+      <tbody>
+      {% for n in d.nodes %}
+        <tr>
+          <td>{{ n.name }} <div class="muted">{{ n.node_key }}</div></td>
+          <td>{{ n.role }}</td>
+          <td>{% if n.generation %}第 {{ n.generation }} 代{% else %}—{% endif %}</td>
+          <td>{% if n.is_active_primary %}<span class="badge ok">是</span>{% else %}<span class="muted">否</span>{% endif %}</td>
+          {% if n.latest_observation %}
+          <td>{{ n.latest_observation.timeline }}</td>
+          <td><code>{{ n.latest_observation.replay_lsn_text }}</code>
+              {% if not n.latest_observation.accepted %}<div class="reason">该回报被判定过期，未生效</div>{% endif %}</td>
+          <td>{{ n.latest_observation.source }}</td>
+          {% else %}
+          <td colspan="3" class="muted">尚无观测</td>
+          {% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>录入新观测（主库 LSN 水位 + 候选副本 timeline / replay LSN）</h2>
+    <form method="post" action="/incidents/{{ d.id }}/observations">
+      <input type="hidden" name="expected_version" value="{{ d.version }}">
+      <input type="hidden" name="request_id" value="obs-{{ d.id }}-{{ new_request_id }}">
+      <table>
+        <thead><tr><th>候选节点</th><th>timeline</th><th>replay LSN</th></tr></thead>
+        <tbody>
+        {% set candidates = d.nodes | selectattr('role', 'equalto', 'candidate') | list %}
+        {% for n in candidates %}
+        <tr>
+          <td>{{ n.name }} <div class="muted">{{ n.node_key }}</div>
+              <input type="hidden" name="node_key_{{ loop.index0 }}" value="{{ n.node_key }}"></td>
+          <td><input name="timeline_{{ loop.index0 }}" value="{{ n.latest_observation.timeline if n.latest_observation else d.current_primary_timeline }}" required></td>
+          <td><input name="replay_lsn_{{ loop.index0 }}" value="{{ n.latest_observation.replay_lsn_text if n.latest_observation else '' }}" placeholder="0/3000000" required style="min-width:220px"></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <button type="submit">提交观测（版本不匹配会被拒绝）</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>登记归档 WAL 区间</h2>
+    <form method="post" action="/incidents/{{ d.id }}/archives">
+      <input type="hidden" name="expected_version" value="{{ d.version }}">
+      <input type="hidden" name="request_id" value="arc-{{ d.id }}-{{ new_request_id }}">
+      <div class="grid">
+        <div><label>timeline</label><input name="timeline" value="{{ d.current_primary_timeline }}" required></div>
+        <div><label>起始 segment（含）</label><input name="start_segment" placeholder="000000010000000000000001" required style="min-width:240px"></div>
+        <div><label>结束 segment（含）</label><input name="end_segment" placeholder="000000010000000000000003" required style="min-width:240px"></div>
+      </div>
+      <button type="submit" class="secondary">登记归档区间</button>
+    </form>
+    {% if d.archives %}
+    <table style="margin-top:14px">
+      <thead><tr><th>timeline</th><th>起始 segment</th><th>结束 segment</th></tr></thead>
+      <tbody>
+      {% for a in d.archives %}
+        <tr><td>{{ a.timeline }}</td><td><code>{{ a.start_segment }}</code></td><td><code>{{ a.end_segment }}</code></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>接任检查与确认</h2>
+    <p class="muted">检查只做评估并落库每个候选的淘汰原因；确认接任在无可接任副本时会失败并保留上次主库。重复提交同一请求只返回已生效结果。</p>
+    <form method="post" action="/incidents/{{ d.id }}/checks" style="display:inline">
+      <input type="hidden" name="expected_version" value="{{ d.version }}">
+      <input type="hidden" name="request_id" value="chk-{{ d.id }}-{{ new_request_id }}">
+      <button type="submit" class="secondary">执行接任检查</button>
+    </form>
+    <form method="post" action="/incidents/{{ d.id }}/promote" style="display:inline">
+      <input type="hidden" name="expected_version" value="{{ d.version }}">
+      <input type="hidden" name="request_id" value="promote-{{ d.id }}-{{ new_request_id }}">
+      <label style="display:inline-block">指定接任节点（留空自动选重放最远者）</label>
+      <select name="node_key">
+        <option value="">自动选择</option>
+        {% for n in candidates %}<option value="{{ n.node_key }}">{{ n.name }}（{{ n.node_key }}）</option>{% endfor %}
+      </select>
+      <button type="submit" class="danger">确认接任</button>
+    </form>
+
+    {% if d.last_check %}
+    <h3 style="margin-top:18px">最近一次检查（#{{ d.last_check.check_id }}，结果：
+      {% if d.last_check.outcome == 'promoted' %}<span class="badge ok">已接任</span>
+      {% elif d.last_check.outcome == 'failed_kept_old_primary' %}<span class="badge bad">失败·保留旧主库</span>
+      {% else %}<span class="badge warn">仅评估</span>{% endif %}）
+    </h3>
+    <p class="muted">水位 timeline {{ d.last_check.primary_timeline }}，提交 LSN <code>{{ d.last_check.commit_lsn_text }}</code>
+       ，检查基于 v{{ d.last_check.incident_version }}{% if d.last_check.detail %}；{{ d.last_check.detail }}{% endif %}</p>
+    <table>
+      <thead><tr><th>候选</th><th>timeline</th><th>replay LSN</th><th>结论</th><th>淘汰原因 / 所需 WAL</th></tr></thead>
+      <tbody>
+      {% for c in d.last_check.candidates %}
+        <tr>
+          <td>{{ c.node_id }}</td>
+          <td>{{ c.timeline }}</td>
+          <td><code>{{ c.replay_lsn_text }}</code></td>
+          <td>{% if c.eligible %}<span class="badge ok">可接任</span>{% else %}<span class="badge bad">淘汰</span>{% endif %}</td>
+          <td>
+            {% for r in c.reasons %}<div class="reason">· {{ r }}</div>{% endfor %}
+            {% if c.eligible and c.required_segments %}<div class="muted">需补齐 {{ c.required_segments | length }} 个归档 segment 后连续重放至水位</div>{% endif %}
+            {% if c.eligible and not c.required_segments %}<div class="muted">已在同一 timeline 重放到提交水位</div>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>主库恢复回报（模拟旧主库迟到回报）</h2>
+    <form method="post" action="/incidents/{{ d.id }}/recovery-reports">
+      <input type="hidden" name="request_id" value="rec-{{ d.id }}-{{ new_request_id }}">
+      <div class="grid">
+        <div><label>回报节点</label>
+          <select name="node_key">
+            {% for n in d.nodes %}<option value="{{ n.node_key }}">{{ n.name }}（{{ n.node_key }}）</option>{% endfor %}
+          </select>
+        </div>
+        <div><label>节点声称的代次</label><input name="generation" value="{{ d.current_generation }}" required></div>
+        <div><label>timeline</label><input name="reported_primary_timeline" value="{{ d.current_primary_timeline }}" required></div>
+        <div><label>replay LSN</label><input name="reported_replay_lsn" placeholder="0/3000100" required></div>
+      </div>
+      <button type="submit" class="secondary">提交恢复回报</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>主库代次历史</h2>
+    {% if d.generations %}
+    <table>
+      <thead><tr><th>代次</th><th>新主库</th><th>旧主库</th><th>timeline</th><th>提交水位</th><th>请求 ID（幂等键）</th></tr></thead>
+      <tbody>
+      {% for g in d.generations %}
+        <tr>
+          <td>第 {{ g.generation }} 代</td>
+          <td>{{ g.new_primary.name }}（{{ g.new_primary.node_key }}）</td>
+          <td>{% if g.old_primary %}{{ g.old_primary.name }}{% else %}—{% endif %}</td>
+          <td>{{ g.timeline }}</td><td><code>{{ g.commit_lsn_text }}</code></td>
+          <td><code>{{ g.request_id }}</code></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="muted">尚无接任确认，当前仍为初始主库。</p>{% endif %}
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PostgreSQL 故障切换值班台</title>
+  <style>
+    :root { --ok:#1a7f37; --bad:#c62828; --warn:#b26a00; --line:#d0d7de; --bg:#f6f8fa; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+           margin: 0; background: var(--bg); color: #1f2328; }
+    header { background: #0d3b66; color: #fff; padding: 16px 28px; }
+    header h1 { margin: 0; font-size: 20px; }
+    main { max-width: 1080px; margin: 24px auto; padding: 0 20px; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 8px;
+            padding: 18px 20px; margin-bottom: 20px; }
+    h2 { margin-top: 0; font-size: 17px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+    th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #eef2f6; }
+    form { margin: 0; }
+    label { font-size: 13px; color: #555; display: block; margin: 8px 0 3px; }
+    input, select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+                    font-size: 14px; min-width: 180px; }
+    button { margin-top: 12px; padding: 8px 18px; border: 0; border-radius: 6px;
+             background: #0d6efd; color: #fff; font-size: 14px; cursor: pointer; }
+    button.secondary { background: #57606a; }
+    button.danger { background: #c62828; }
+    .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge.ok { background: #dafbe1; color: var(--ok); }
+    .badge.bad { background: #ffebe9; color: var(--bad); }
+    .badge.warn { background: #fff8c5; color: var(--warn); }
+    .muted { color: #656d76; font-size: 13px; }
+    .error { background: #ffebe9; border: 1px solid #ffabaf; color: #8a1c1c;
+             padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 18px; }
+    code { background: #eef2f6; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+    .reason { color: var(--bad); font-size: 13px; margin: 3px 0; }
+    .pill-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  </style>
+</head>
+<body>
+<header><h1>PostgreSQL 故障切换值班台</h1></header>
+<main>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <div class="card">
+    <h2>新建故障事件</h2>
+    <form method="post" action="/incidents">
+      <div class="grid">
+        <div>
+          <label>事件标题</label>
+          <input name="title" required placeholder="如：主库磁盘故障 2026-11-21">
+        </div>
+        <div>
+          <label>主库 timeline</label>
+          <input name="primary_timeline" value="1" required>
+        </div>
+        <div>
+          <label>主库最后提交 LSN</label>
+          <input name="commit_lsn" required placeholder="0/3000100">
+        </div>
+      </div>
+      <label>节点（第 1 行填主库，其余为候选副本）</label>
+      <table>
+        <thead><tr><th>节点标识</th><th>名称</th><th>角色</th></tr></thead>
+        <tbody>
+        {% for i in range(5) %}
+          <tr>
+            <td><input name="node_key_{{ i }}" placeholder="node-{{ i }}" {% if i == 0 %}required{% endif %}></td>
+            <td><input name="name_{{ i }}" placeholder="显示名称"></td>
+            <td>
+              <select name="role_{{ i }}">
+                <option value="primary" {% if i == 0 %}selected{% endif %}>primary（主库）</option>
+                <option value="candidate" {% if i != 0 %}selected{% endif %}>candidate（候选副本）</option>
+              </select>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <button type="submit">创建事件</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>故障事件</h2>
+    {% if incidents %}
+    <table>
+      <thead><tr><th>#</th><th>标题</th><th>版本</th><th>当前主库代次</th><th>生效主库</th><th>提交水位</th><th></th></tr></thead>
+      <tbody>
+      {% for it in incidents %}
+        <tr>
+          <td>{{ it.id }}</td>
+          <td>{{ it.title }}</td>
+          <td>v{{ it.version }}</td>
+          <td>第 {{ it.current_generation }} 代</td>
+          <td>{% if it.active_primary %}{{ it.active_primary.name }}（{{ it.active_primary.node_key }}）{% else %}—{% endif %}</td>
+          <td><code>{{ it.current_commit_lsn_text }}</code></td>
+          <td><a href="/incidents/{{ it.id }}">进入值班台 →</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <p class="muted">暂无事件。可运行 <code>python -m scripts.seed</code> 载入本地样例，或在上方手动创建。</p>
+    {% endif %}
+  </div>
+</main>
+</body>
+</html>
